@@ -1,0 +1,25 @@
+{
+    "lead" : "georges",
+    "teams" : [
+        {
+            "lead" : "davidk",
+            "teams"   : [
+                {
+                    "lead" : "waltc",
+                    "members" : [
+                        "garyv",
+                        "joem"
+                    ]
+                },
+                {
+                    "lead" : "dsmith",
+                    "members" : [
+                        "coleenp",
+                        "judyw",
+                        "prem"
+                    ]
+                }
+            ]
+        }
+    ]
+}
