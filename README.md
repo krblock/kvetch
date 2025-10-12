@@ -9,4 +9,7 @@ is a Jenkins Build Monitoring Tool that will provided:
 Features 1 and 2 have preliminary support. I am already using this and it is helpful in practice.
 
 [Installation Instructions](docs/install.md)
+
 [Example Usage](docs/examples.md)
+
+Kvetch uses SQLite to maintain history and provide caching to minimize use of your Jenkins server.
