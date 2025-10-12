@@ -13,3 +13,7 @@ Features 1 and 2 have preliminary support. I am already using this and it is hel
 [Example Usage](docs/examples.md)
 
 Kvetch uses SQLite to maintain history and provide caching to minimize use of your Jenkins server.
+
+# WARNINGS
+
+This is little error handling at this point. Almost all incorrect usage result in exceptions.
