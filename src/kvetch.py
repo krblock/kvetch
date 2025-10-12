@@ -223,6 +223,9 @@ def init_sqlite():
 
     # Check if the database file already exists
     is_new_db = not os.path.exists(db_path)
+    if is_new_db:
+        parent_dir = os.path.dirname(os.path.abspath(db_path))
+        os.makedirs(parent_dir, exist_ok=True)
 
     # Connect to the database
     global conn, cursor
