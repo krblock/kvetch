@@ -1,35 +1,37 @@
 #!/usr/bin/env python3
 
-# Copyright 2025 Thinker Cats (thinkercats.com)
+# Copyright 2025 Thinker Cats, Inc
 #
 # Licensed under BSD 3-Clause License
 
 import datetime
+import importlib
 import io
 import jenkins
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import textwrap
 import zlib
 
-import scanlog
-
 #
 # Jenkins
 #
-# Go to https://<jenkins>/user/<username>/security/
-# to create a token for logging in to jenkins. Store as ~/.ssh/jenkins-token.
+# Go to <jenkins_url>/user/<username>/security/
+# to create a token for logging in to jenkins. Record location in
+# kvetch.json config: jenkins_auth.
 #
+jenkins_url=None
+jenkins_auth=None
 def connect_jenkins():
-    global server
+    global server, jenkins_url
 
-    jenkins_url = 'https://<jenkins>'
     jenkins_username = os.getlogin()
 
-    with open(Path.home().joinpath('.ssh/jenkins-token'), 'r') as file:
+    with open(os.path.expanduser(jenkins_auth), 'r') as file:
         jenkins_api_token = file.read()
 
     try:
@@ -45,13 +47,29 @@ def get_job_num(real_job_info,field):
     else:
         return None
 
+
+def extract_job_component(url):
+    """
+    Extracts the component between two 'job/' segments in a Jenkins-style URL.
+    """
+    match = re.search(r'/job/([^/]+)/job/', url)
+    if match:
+        return match.group(1)
+    return None
+
 def get_jobs(view):
     jobs=[]
     view_jobs = server.get_jobs(view_name=view)
     for job in view_jobs:
-# TBD: there is a bug here where I have to add "<NAME>/" to the name to
-# retrieve the job_info. TBD.
-        job_name = '<NAME>/'+job['name']
+        job_name = job['name']
+
+# TBD: there is a bug here where the name given is missing the project
+# prefix. We have implemented a workaround to get the prefix out of the URL.
+# It is not clear how robust this is
+        job_component = extract_job_component(job['url'])
+        if (job_component):
+            job_name=job_component+'/'+job_name
+
         jobs.append(job_name)
     return jobs
 
@@ -136,7 +154,8 @@ def get_build_console(job,build):
     return server.get_build_console_output(job,build)
 
 def for_each_build(job_infos, build_pred, callback):
-   for job_info in job_infos:
+    ret = False # Indicates if callback called
+    for job_info in job_infos:
         try:
             job_name=job_info['name']
             builds = job_info['builds']
@@ -152,10 +171,12 @@ def for_each_build(job_infos, build_pred, callback):
                 build_info = get_build_info(job_name,build)
 
                 callback(build_info)
+                ret=True
 
         except jenkins.JenkinsException as e:
             print("%s has no jobs available" % job['name'])
             print(f"{e}")
+    return ret
 
 def get_full_display_name(job_name, build_num):
     return job_name.replace("/", " » ", 1) + " #" + str(build_num)
@@ -178,9 +199,9 @@ def process_team(team, parent_lead=None):
     for subteam in team.get("teams", []):
         process_team(subteam, lead)
 
-# Load org chart from corrected JSON file        
-def init_org():
-    with open("kvetch/org.json", "r") as f:
+# Load org chart from corrected JSON file
+def init_org(org_file):
+    with open(org_file, "r") as f:
         org_chart = json.load(f)
 
         # Process the org chart
@@ -196,8 +217,9 @@ def get_members_of(lead_name):
 #
 # Sqlite
 #
+db_path = None
 def init_sqlite():
-    db_path = 'tmp/kvetch-db'
+    global db_path
 
     # Check if the database file already exists
     is_new_db = not os.path.exists(db_path)
@@ -349,8 +371,10 @@ def db_get_build_log(job_name,build_num):
     build_log=zlib.decompress(row[0]).decode('utf-8')
     return build_log
 
-def close_sqlite():
+def commit_sqlite():
     conn.commit()
+
+def close_sqlite():
     conn.close()    
 
 def db_for_each_build(job_infos, build_pred, callback):
@@ -386,11 +410,84 @@ def count_builds(job_infos):
     return count
 
 #
+# Config
+#
+import os
+import json
+
+def find_and_load_json_config(filename="kvetch.json", search_paths=None):
+    """Searches for a JSON config file in a list of directories and loads
+    its contents.  Relative paths are resolved based on the script's
+    location.
+
+    Parameters:
+    - filename (str): Name of the JSON file to search for.
+    - search_paths (list): Directories to search. If not, use defaults.
+
+    Returns:
+    - dict: Parsed JSON content if found and valid.
+    - None: If file not found or invalid JSON.
+
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if (search_paths is None):
+        search_paths = [
+            ".",                             # script directory
+            "./config",                      # ./config relative to script
+            "./kvetch",                      # ./config relative to script
+            os.path.expanduser("~/.kvetch")  # absolute path
+        ]
+
+    # Default to script directory if no paths provided
+    if len(search_paths) == 0:
+        resolved_paths = [ "." ]
+    else:
+        # Resolve all paths relative to the script's location
+        resolved_paths = [os.path.abspath(os.path.join(script_dir, path))
+                          for path in search_paths]
+
+    for path in resolved_paths:
+        full_path = os.path.join(path, filename)
+        if os.path.isfile(full_path):
+            try:
+                with open(full_path, 'r') as f:
+                    return json.load(f)
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON in {full_path}: {e}")
+                return None
+
+    print(f"{filename} not found in any of the specified paths: {resolved_paths}")
+    return None
+
+#
+# Load user defined function
+#
+def load_func_from_file(file_path, function_name):
+    """
+    Loads a function from a Python file given its path and function name.
+
+    Parameters:
+    - file_path (str): Path to the .py file.
+    - function_name (str): Name of the function to load.
+
+    Returns:
+    - Callable function object, or None if not found.
+    """
+    module_name = os.path.splitext(os.path.basename(file_path))[0]
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return getattr(module, function_name, None)
+    return None
+
+#
 # Common
 #
-def init():
+def init(org_path):
     connect_jenkins()
-    init_org()
+    init_org(org_path)
     init_sqlite()
 
 def finish():
@@ -421,8 +518,14 @@ def skip_build(job,build):
     skip_count=0
     return False # Do not skip
 
+first_record=True
 def record_build(build_info):
-    print_build(build_info)
+    global first_record
+    if (first_record):
+        print("Populating New Builds ...")
+        first_record=False
+
+    print_build_internal(build_info,False)
     if (build_info['inProgress']):
         return
     build_log = get_build_console(build_info['name'],build_info['number'])
@@ -456,14 +559,14 @@ def print_build_internal(build_info,verbose):
     else:
         print(" : %s" % build_info['result'], end='')
 
-    claimedBy = build_info.get('claimedBy')
-    if (claimedBy):
-        print(" claimed by %s" % claimedBy)
-        reason=build_info['reason']
-        if (reason):
-            print(textwrap.indent(reason,'    '),end='')
-        else:
-            print(" is unclaimd",end='')
+        claimedBy = build_info.get('claimedBy')
+        if (claimedBy):
+            print(" claimed by %s" % claimedBy,end='')
+            if (verbose):
+                reason=build_info['reason']
+                if (reason):
+                    print('')
+                    print(textwrap.indent(reason,'    '),end='')
 
     print('')
 
@@ -493,11 +596,12 @@ def truncate_to_n_lines(s, n):
     lines = s.splitlines()
     return '\n'.join(lines[:n])
 
+scan_log_func = None
 scan_log_limit = 0
 def scan_log(buildlog):
-    global scan_log_limit
+    global scan_log_func,scan_log_limit
     f=io.StringIO(buildlog)
-    s=scanlog.scan_log(f)
+    s=scan_log_func(f)
     if (scan_log_limit > 0):
         print(truncate_to_n_lines(s['log'],scan_log_limit))
     else:
@@ -505,37 +609,51 @@ def scan_log(buildlog):
 
 enable_header = False
 first_header = True
-def print_header(name,num):
+def print_header(build_info):
     global enable_header, first_header
+    name=build_info['name']
+    num=build_info['number']
     if (enable_header):
         if (not first_header):
             print("\n")
         first_header=False
         
         log_header=f"{name} #{num}"
+        if (build_info['inProgress']):
+            log_header+= " : RUNNING"
+        else:
+            log_header+=f" : {build_info['result']}"
+
+        claimedBy = build_info.get('claimedBy')
+        if (claimedBy):
+            log_header+=f" claimed by {claimedBy}"
+
         print(log_header)
         print('-'*len(log_header))
         print("")
 
-        
+
 def scan_log_callback(build_info):
+    print_header(build_info)
+
     name=build_info['name']
     num=build_info['number']
-    print_header(name,num)
     buildlog=get_build_console(name,num)
     scan_log(buildlog)
 
 def db_scan_log_callback(build_info):
+    print_header(build_info)
+
     name=build_info['name']
     num=build_info['number']
-    print_header(name,num)
     buildlog=db_get_build_log(name,num)
     scan_log(buildlog)
 
 def db_print_log_callback(build_info):
+    print_header(build_info)
+
     name=build_info['name']
     num=build_info['number']
-    print_header(name,num)
     buildlog=db_get_build_log(name,num)
     print(buildlog)
 
@@ -546,14 +664,13 @@ def db_print_log_callback(build_info):
 if __name__ == "__main__":
     import getopt
 
-    opts,args = getopt.getopt(sys.argv[1:], 'v:j:b:adflnqrs')
+    opts,args = getopt.getopt(sys.argv[1:], 'b:c:j:v:adflnqrs')
 
     if len(args) > 0:
         print("Usage: %s" % sys.argv[0])
         sys.exit(1)
 
-    init()
-
+    config_name=None
     view_name=None
     job_names=[]
     build_ids=[]
@@ -565,8 +682,22 @@ if __name__ == "__main__":
             job_names.append(a)
         elif o == "-b":
             build_ids.append(a)
+        elif o == "-c":
+            config_name = a
 
     opts = dict(opts)
+
+    if (config_name):
+        config = find_and_load_json_config(config_name,[])
+    else:
+        config = find_and_load_json_config("kvetch.json")
+    jenkins_url=config['jenkins_url']
+    jenkins_auth=config['jenkins_auth']
+    db_path=config['db_path']
+    scan_log_func=load_func_from_file(config['scanlogpy'],config['scanlogfunc'])
+    org_path=config['org_chart']
+
+    init(org_path)
 
     if (view_name):
         job_names.extend(get_jobs(view_name))
@@ -597,7 +728,9 @@ if __name__ == "__main__":
     # Populate new data into DB from Jenkins unless specifically suspended
     #
     if (not '-n' in opts):
-        for_each_build(job_infos, skip_build, record_build)
+        if (for_each_build(job_infos, skip_build, record_build)):
+            print('')
+            commit_sqlite()
 
     #
     # These options only pull data from the DB
@@ -631,20 +764,11 @@ if __name__ == "__main__":
 import unittest
 
 class MyTestCase(unittest.TestCase):
-    def test_jenkins(self):
-        connect_jenkins()
-        user = server.get_whoami()
-        version = server.get_version()
-        self.assertEqual(os.getlogin(),user['id'])
-        self.assertEqual('2.516.1',version)
-
-
     def test_org(self):
-        init_org()
-        self.assertEqual('waltce',get_lead_of("garyv"))
+        init_org("examples/org.json")
+        self.assertEqual('waltc',get_lead_of("garyv"))
         m=get_members_of("dsmith")
         self.assertEqual('coleenp',m[0])
         self.assertEqual('judyw',m[1])
         self.assertEqual('prem',m[2])
         self.assertEqual(3,len(m))
-        

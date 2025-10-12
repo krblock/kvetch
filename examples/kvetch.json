@@ -1,0 +1,9 @@
+{
+    "jenkins_url": "https://<my jenkins URL>",
+    "jenkins_auth": "~/.ssh/jenkins-token",
+    "db_path":     "./db/kvetch-db",
+    "org_chart":    "./kvetch/org.json",
+    "scanlogpy":   "./kvetch/scanlog.py",
+    "scanlogfunc": "scan_log"
+}
+  
