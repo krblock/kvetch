@@ -1,4 +1,4 @@
-# kvetch
+# Kvetch
 is a Jenkins Build Monitoring Tool that will provided:
 
 1. Status reporting
@@ -14,6 +14,6 @@ Features 1 and 2 have preliminary support. I am already using this and it is hel
 
 Kvetch uses SQLite to maintain history and provide caching to minimize use of your Jenkins server.
 
-# WARNINGS
+# WARNING
 
-This is little error handling at this point. Almost all incorrect usage result in exceptions.
+There is little error handling at this point. Almost all incorrect usage results in exceptions.
