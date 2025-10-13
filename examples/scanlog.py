@@ -61,7 +61,7 @@ pattern_actions = {
 
     # Patterns to things that looks like failures
     re.compile(r": \*\*\*"): handle_generic_error,
-    re.compile(r"^ERROR:"): handle_noprefix_error,
+    re.compile(r"^ERROR:"): handle_generic_error,
     re.compile(r"^ssh: (.*)"): handle_generic_error,
     re.compile(r"^rsync: (.*)"): handle_generic_error,
     re.compile(r"^rsync error: (.*)"): handle_generic_error,
@@ -105,7 +105,7 @@ def scan_log(f):
         add_logging("No known failures were detected")
 
     summary['count']=count
-    summary['log']=log[State.Summary]
+    summary['summary']=log[State.Summary]
     return summary
 
 #
@@ -137,5 +137,5 @@ if __name__ == "__main__":
 
     f.close()
 
-    print(summary('log'),end='')
+    print(summary('summary'),end='')
     sys.exit(0)
