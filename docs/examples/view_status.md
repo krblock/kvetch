@@ -1,5 +1,5 @@
 ```
-(venv) kblock@d-ubuntu-46:~/play/kvetch$ ./kvetch.py -v "Kvetch Main" -b lastCompletedBuild -d
+(venv) $ ./kvetch.py -v "Kvetch Main" -b lastCompletedBuild -d
 TC/kvetch-main.aix                     #263  (v-7879, 2:31:06, 2025-10-12 10:34:30) : FAILURE claimed by twatson
     I'm so old, I think I broke my hip.
 
