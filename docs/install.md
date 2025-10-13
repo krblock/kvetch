@@ -22,6 +22,14 @@ Test to see if it is working:
 $ ./kvetch.py -j "<Jenkins Job Name>" -s
 <Job Name>                     #<Build Number>  : <Status>
 ```
+## Quick install
+
+```
+$ git clone <kvetch repo> kvetch-git
+$ kvetch-git/install.sh <kvetch-install-dir> <your jenkins URL>
+```
+
+Then create API Token and check to see if it is working.
 
 ## Customizing scanlog.py
 
@@ -30,3 +38,4 @@ Kvetch provides an interface to Jenkins, a schema for SQLite, and a framework fo
 The suggested framework is this: divide your build log up into sections to cover the interesting phases of your build. Typical phases and what is provided in the example are: prologue, checkout, build, test, epilogue, and summary. You need to add regular expressions to tell scanlog when you are transitioning to different phases. You then add regular expressions for things that are important for reporting in the scanlog and scanlog will record them in the log of the appropriate phase.
 
 It is not necessary to follow the framework provided. The only requirement is that the scan function return a dictionary of useful information about the scanlog that you want Kvetch to be able to report. Currently the only information Kvetch will report (-f) is the 'summary' information in the dictionary, but this limitation will be lifted shortly.
+
