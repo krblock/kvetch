@@ -7,5 +7,6 @@ or specific build numbers.
 
 [Show the history of a particular job](examples/job_history.md)
 
-[Show status of all builds using a view](examples/view_status.md)
+[Show status of most recent builds for all jobs in a view](examples/view_status.md)
 
+[Show build log for a particular build](examples/build_log.md)
