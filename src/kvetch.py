@@ -606,9 +606,9 @@ def scan_log(buildlog):
     f=io.StringIO(buildlog)
     s=scan_log_func(f)
     if (scan_log_limit > 0):
-        print(truncate_to_n_lines(s['log'],scan_log_limit))
+        print(truncate_to_n_lines(s['summary'],scan_log_limit))
     else:
-        print(s['log'])
+        print(s['summary'])
 
 enable_header = False
 first_header = True

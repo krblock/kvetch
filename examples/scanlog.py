@@ -35,15 +35,16 @@ def handle_begin_build(line,timestamp,match):
     global state
     state = State.Build
 
+def handle_begin_test(line,timestamp,match):
+    global state
+    state = State.Test
+
 def handle_begin_epilogue(line,timestamp,match):
     global state
     state = State.Epilogue
 
 def handle_generic_error(line,timestamp,match):
     add_logging(f"[ERROR] {line}")
-
-def handle_noprefix_error(line,timestamp,match):
-    add_logging(f"{line}")
 
 def ignore_pattern(line,timestamp,match):
     None
@@ -52,6 +53,7 @@ pattern_actions = {
     # Patterns for state transition
     re.compile(r"^git clone"): handle_begin_checkout,
     re.compile(r"make -f all.mk all"): handle_begin_build,
+    re.compile(r"^Testing initiated"): handle_begin_test,
     re.compile(r"^Testing complete"): handle_begin_epilogue,
 
     # Patterns that look like failures, but are not
@@ -59,7 +61,6 @@ pattern_actions = {
 
     # Patterns to things that looks like failures
     re.compile(r": \*\*\*"): handle_generic_error,
-    re.compile(r"^\[ERROR\]"): handle_noprefix_error,
     re.compile(r"^ERROR:"): handle_noprefix_error,
     re.compile(r"^ssh: (.*)"): handle_generic_error,
     re.compile(r"^rsync: (.*)"): handle_generic_error,
