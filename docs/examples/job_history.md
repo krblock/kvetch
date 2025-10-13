@@ -1,5 +1,5 @@
 ```
-$ ./kvetch.py -j TC/prevent-main.linux64 -d
+(venv) $ ./kvetch.py -j TC/prevent-main.linux64 -d
 TC/kvetch-main.linux64                 #956  (v-7879, 1:56:47, 2025-10-12 08:37:34) : SUCCESS
 TC/kvetch-main.linux64                 #955  (v-7878, 2:00:42, 2025-10-12 00:23:57) : SUCCESS
 TC/kvetch-main.linux64                 #954  (v-7877, 1:58:40, 2025-10-11 20:56:16) : SUCCESS
