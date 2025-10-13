@@ -10,3 +10,6 @@ or specific build numbers.
 [Show status of most recent builds for all jobs in a view](examples/view_status.md)
 
 [Show build log for a particular build](examples/build_log.md)
+
+[Show scan log for a particular job](examples/scan_log.md)
+
