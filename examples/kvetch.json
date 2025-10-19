@@ -1,9 +1,14 @@
 {
-    "jenkins_url":  "https://<my jenkins URL>",
+    "jenkins_url":  "<my jenkins URL>",
     "jenkins_auth": "~/.ssh/jenkins-token",
     "db_path":      "./db/kvetch-db",
     "org_chart":    "./config/org.json",
     "scanlogpy":    "./config/scanlog.py",
-    "scanlogfunc":  "scan_log"
+    "scanlogfunc":  "scan_log",
+    "from_email":    "<email addresss to send Kvetch email from>",
+    "smtp_server":   "<smtp server>",
+    "smtp_port":     25,
+    "build_monitor": "<build monitor email address>"
+
 }
   

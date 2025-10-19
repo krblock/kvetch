@@ -5,6 +5,7 @@
 # Licensed under BSD 3-Clause License
 
 import datetime
+from email.message import EmailMessage
 import importlib
 import io
 import jenkins
@@ -12,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import smtplib
 import sqlite3
 import sys
 import textwrap
@@ -118,8 +120,9 @@ def get_job_infos(jobs_names,build_ids):
                             bnums.append(int(job_info[i]))
                 job_info['builds'] = bnums
             else:
-                job_info['name'] = i
+                job_info=get_job_info(i)
                 job_info['builds'] = build_nums
+                
             job_infos.append(job_info)
     return job_infos
 
@@ -153,7 +156,7 @@ def get_build_info(job,build):
 def get_build_console(job,build):
     return server.get_build_console_output(job,build)
 
-def for_each_build(job_infos, build_pred, callback):
+def for_each_build(job_infos, build_pred, callback,f):
     ret = False # Indicates if callback called
     for job_info in job_infos:
         try:
@@ -170,7 +173,7 @@ def for_each_build(job_infos, build_pred, callback):
                 
                 build_info = get_build_info(job_name,build)
 
-                callback(build_info)
+                callback(f,job_info,build_info)
                 ret=True
 
         except jenkins.JenkinsException as e:
@@ -380,7 +383,7 @@ def commit_sqlite():
 def close_sqlite():
     conn.close()    
 
-def db_for_each_build(job_infos, build_pred, callback):
+def db_for_each_build(job_infos, build_pred, callback,f):
    for job_info in job_infos:
         try:
             job_name=job_info['name']
@@ -398,7 +401,7 @@ def db_for_each_build(job_infos, build_pred, callback):
                 if (build_info is None):
                     continue
 
-                callback(build_info)
+                callback(f,job_info,build_info)
 
         except jenkins.JenkinsException as e:
             print("%s has no jobs available" % job['name'])
@@ -464,6 +467,28 @@ def find_and_load_json_config(filename="kvetch.json", search_paths=None):
     return None
 
 #
+# Send an email
+#
+from_email=None
+smtp_server=None
+smtp_port=None
+
+def send_email(to_email, subject, body):
+    global from_email, smtp_server, smtp_port
+    msg = EmailMessage()
+    msg.set_content(body)
+    msg["Subject"] = subject
+    msg["From"] = from_email
+    msg["To"] = to_email
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.send_message(msg)
+        print("✅ Email sent successfully.")
+    except Exception as e:
+        print(f"❌ Failed to send email: {e}")
+
+#
 # Load user defined function
 #
 def load_func_from_file(file_path, function_name):
@@ -496,7 +521,7 @@ def init(org_path):
 def finish():
     close_sqlite()
 
-def print_build_json(build_info):
+def print_build_json(job_info,build_info):
     pretty_json_string = json.dumps(build_info, indent=4)
     print(pretty_json_string)
     return False
@@ -522,13 +547,13 @@ def skip_build(job,build):
     return False # Do not skip
 
 first_record=True
-def record_build(build_info):
+def record_build(f,job_info,build_info):
     global first_record
     if (first_record):
         print("Populating New Builds ...")
         first_record=False
 
-    print_build_internal(build_info,False)
+    print_build_internal(f,job_info,build_info,False)
     if (build_info['inProgress']):
         return
     build_log = get_build_console(build_info['name'],build_info['number'])
@@ -548,52 +573,57 @@ def debug_print_jobs_builds(job_infos):
         else:
             print("%s: empty" % ji['name'])
 
-def print_build_internal(build_info,verbose):
-    print("%-40s #%-4d" % (build_info['name'], build_info['number']), end='')
+def print_build_internal(f,job_info, build_info,verbose):
+    print("%-40s #%-4d" % (build_info['name'], build_info['number']),
+          end='', file=f)
     if (verbose):
         print(" (%s, %s, %s)" %
               (build_info['description'],
                str(datetime.timedelta(seconds=int(build_info['duration'])//1000)),
                datetime.datetime.fromtimestamp(
                    int(build_info['timestamp'])//1000)),
-              end='')
+              end='',file=f)
     if (build_info['inProgress']):
-        print(" : RUNNING",end='')
+        print(" : RUNNING",end='',file=f)
     else:
-        print(" : %s" % build_info['result'], end='')
+        r=build_info['result']
+        print(" : %s" % r, end='',file=f)
+        if (r == "FAILURE"):
+            print(" (lastSuccess #%d)" % job_info['lastSuccessfulBuild'],
+                  end='',file=f)
 
         claimedBy = build_info.get('claimedBy')
         if (claimedBy):
-            print(" claimed by %s" % claimedBy,end='')
+            print(" claimed by %s" % claimedBy,end='',file=f)
             if (verbose):
                 reason=build_info['reason']
                 if (reason):
-                    print('')
-                    print(textwrap.indent(reason,'    '),end='')
+                    print('',file=f)
+                    print(textwrap.indent(reason,'    '),end='',file=f)
 
-    print('')
+    print('',file=f)
 
-def print_build(build_info):
-    print_build_internal(build_info, True)
+def print_build(f,job_info,build_info):
+    print_build_internal(f,job_info,build_info, True)
     
 #
 # print build status is an optimized version of print_build that avoids
 # loading the build info for successful builds.
 #
-def print_jobs_status(job_infos):
+def print_jobs_status(f,job_infos):
     for ji in job_infos:
         name=ji['name']
         ls=ji['lastSuccessfulBuild']
         lc=ji['lastCompletedBuild']
         if (ls and lc):
             if (ls == lc):
-                print("%-40s #%-4d : " % (name,lc),end='')
-                print("SUCCESS")
+                print("%-40s #%-4d : " % (name,lc),end='',file=f)
+                print("SUCCESS",file=f)
             else:
                 build_info = get_build_info(name,lc)
-                print_build_internal(build_info, False)
+                print_build_internal(f,ji,build_info, False)
         else:
-            print("%-47s: UNKNOWN" % name)
+            print("%-47s: UNKNOWN" % name, file=f)
 
 def truncate_to_n_lines(s, n):
     lines = s.splitlines()
@@ -601,64 +631,68 @@ def truncate_to_n_lines(s, n):
 
 scan_log_func = None
 scan_log_limit = 0
-def scan_log(buildlog):
+def scan_log(f,job_info,buildlog):
     global scan_log_func,scan_log_limit
-    f=io.StringIO(buildlog)
-    s=scan_log_func(f)
+    fin=io.StringIO(buildlog)
+    s=scan_log_func(fin)
     if (scan_log_limit > 0):
-        print(truncate_to_n_lines(s['summary'],scan_log_limit))
+        print(truncate_to_n_lines(s['summary'],scan_log_limit),file=f)
     else:
-        print(s['summary'])
+        print(s['summary'],file=f)
 
 enable_header = False
 first_header = True
-def print_header(build_info):
+def print_header(f,job_info,build_info):
     global enable_header, first_header
     name=build_info['name']
     num=build_info['number']
     if (enable_header):
         if (not first_header):
-            print("\n")
+            print("\n",file=f)
         first_header=False
         
         log_header=f"{name} #{num}"
         if (build_info['inProgress']):
             log_header+= " : RUNNING"
         else:
-            log_header+=f" : {build_info['result']}"
+            r=build_info['result']
+            log_header+=f" : {r}"
+            if (r == "FAILURE"):
+                log_header+=f" (lastSuccess #{job_info['lastSuccessfulBuild']})"
 
         claimedBy = build_info.get('claimedBy')
         if (claimedBy):
             log_header+=f" claimed by {claimedBy}"
 
-        print(log_header)
-        print('-'*len(log_header))
-        print("")
+
+        print(log_header,file=f)
+        print('-'*len(log_header),file=f)
+        print("",file=f)
 
 
-def scan_log_callback(build_info):
-    print_header(build_info)
+def scan_log_callback(f,job_info,build_info):
+    print_header(f,job_info,build_info)
 
     name=build_info['name']
     num=build_info['number']
     buildlog=get_build_console(name,num)
     scan_log(buildlog)
 
-def db_scan_log_callback(build_info):
-    print_header(build_info)
+def db_scan_log_callback(f,job_info,build_info):
+    print_header(f,job_info,build_info)
 
     name=build_info['name']
     num=build_info['number']
     buildlog=db_get_build_log(name,num)
-    scan_log(buildlog)
+    scan_log(f,job_info,buildlog)
 
-def db_print_log_callback(build_info):
-    print_header(build_info)
+def db_print_log_callback(f,job_info,build_info):
+    print_header(f,job_info,build_info)
 
     name=build_info['name']
     num=build_info['number']
     buildlog=db_get_build_log(name,num)
-    print(buildlog)
+    print(f,buildlog)
 
 #
 # Main Program
@@ -667,7 +701,7 @@ def db_print_log_callback(build_info):
 if __name__ == "__main__":
     import getopt
 
-    opts,args = getopt.getopt(sys.argv[1:], 'b:c:j:v:adflnqrs')
+    opts,args = getopt.getopt(sys.argv[1:], 'b:c:j:v:adflmnqrs')
 
     if len(args) > 0:
         print("Usage: %s" % sys.argv[0])
@@ -699,6 +733,10 @@ if __name__ == "__main__":
     db_path=config['db_path']
     scan_log_func=load_func_from_file(config['scanlogpy'],config['scanlogfunc'])
     org_path=config['org_chart']
+    from_email=config['from_email']
+    smtp_server=config['smtp_server']
+    smtp_port=config['smtp_port']
+    build_monitor=config['build_monitor']
 
     init(org_path)
 
@@ -714,24 +752,24 @@ if __name__ == "__main__":
         if (len(build_ids)>0):
             print("ERROR: build ids not compatible with status")
             sys.exit(1)
-        print_jobs_status(job_infos)
+        print_jobs_status(sys.stdout,job_infos)
         sys.exit(0)
     elif '-a' in opts:
-        for_each_build(job_infos, None, print_build_json)
+        for_each_build(job_infos, None, print_build_json,sys.stdout)
         sys.exit(0)
     elif '-q' in opts:
-        for_each_build(job_infos, None, print_build)
+        for_each_build(job_infos, None, print_build,sys.stdout)
         sys.exit(0)
     elif '-r' in opts:
         # This is for triage at end of Job in Jenkins, no DB involved
-        for_each_build(job_infos, None, scan_log_callback)
+        for_each_build(job_infos, None, scan_log_callback,sys.stdout)
         sys.exit(0)
 
     #
     # Populate new data into DB from Jenkins unless specifically suspended
     #
     if (not '-n' in opts):
-        if (for_each_build(job_infos, skip_build, record_build)):
+        if (for_each_build(job_infos, skip_build, record_build,sys.stdout)):
             print('')
             commit_sqlite()
 
@@ -740,24 +778,36 @@ if __name__ == "__main__":
     #
     if (count_builds(job_infos) > 1):
         enable_header = True
-        scan_log_limit = 10
+        scan_log_limit = 20
 
-    if '-d' in opts:
-        db_for_each_build(job_infos,None,print_build)
-        sys.exit(0)
-    elif '-l' in opts:
-        db_for_each_build(job_infos,None,db_print_log_callback)
-        sys.exit(0)
-    elif '-f' in opts:
-        db_for_each_build(job_infos,None,db_scan_log_callback)
-        sys.exit(0)
+    out=sys.stdout
+    if '-m' in opts:
+        out = io.StringIO()
         
-    if '-t' in opts:
-        print("Trigger emails")
 
-    if '-r' in opts:
-        print("Generate reports")
+    whatis=None
+    if '-d' in opts:
+        whatis="status"
+        db_for_each_build(job_infos,None,print_build,out)
+    elif '-l' in opts:
+        whatis="build log"
+        db_for_each_build(job_infos,None,db_print_log_callback,out)
+    elif '-f' in opts:
+        whatis="scan log"
+        db_for_each_build(job_infos,None,db_scan_log_callback,out)
 
+    if (whatis):
+        if '-m' in opts:
+            subject="Kvetch:"
+            if (view_name):
+                subject+=" "+view_name
+            else:
+                for job in job_names:
+                    subject+=" "+job
+
+            subject+=" "+whatis
+            send_email(build_monitor, subject, out.getvalue()) 
+        
     finish()
     sys.exit(0)
 
