@@ -130,6 +130,8 @@ def get_build_info(job,build):
     real_build_info = server.get_build_info(job,build)
 
     build_info={}
+#    Use for for debug information
+#    build_info['json']            = real_build_info
     build_info['name']            = job
     build_info['number']          = build
     build_info['inProgress']      = real_build_info['inProgress']
@@ -138,7 +140,20 @@ def get_build_info(job,build):
     build_info['result']          = real_build_info['result']
     build_info['duration']        = real_build_info['duration']
     build_info['timestamp']       = real_build_info['timestamp']
+    build_info['url']             = real_build_info['url']
 
+    change_set=[]
+    real_changeSet = real_build_info.get('changeSet')
+    if (real_changeSet):
+        for real_item in real_changeSet['items']:
+            item={}
+            item['authorEmail'] = real_item['authorEmail']
+            item['comment'] = real_item['comment']
+            item['affectedPaths'] = real_item['affectedPaths']
+            item['commitId'] = real_item['commitId']
+            change_set.append(item)
+
+    build_info['changeSets'] = change_set
 
     claim = next(
         (c for c in real_build_info['actions']
@@ -146,10 +161,16 @@ def get_build_info(job,build):
         None)
 
     if (claim):
-        build_info['claimedBy']       = claim['claimedBy']
-        build_info['assignedBy']      = claim['assignedBy']
-        build_info['claimDate']       = claim['claimDate']
-        build_info['reason']          = claim['reason']
+        claim_infos=[]
+        claim_info={}
+        claim_info['claimedBy']       = claim['claimedBy']
+        claim_info['assignedBy']      = claim['assignedBy']
+        claim_info['claimDate']       = claim['claimDate']
+        claim_info['reason']          = claim['reason']
+        claim_infos.append(claim_info)
+        build_info['claims']=claim_infos
+    else:
+        build_info['claims']=[]
 
     return build_info
 
@@ -258,19 +279,28 @@ def init_sqlite():
                 description TEXT,
                 result TEXT not NULL,
                 duration INTEGER,
-                timestamp INTEGER
+                timestamp INTEGER,
+                url TEXT not NULL,
+                changeSets TEXT,
+                claims TEXT
             )
         ''')
 
-        cursor.execute('''
-            CREATE TABLE claims (
-                fullDisplayName TEXT not NULL,
-                claimedBy TEXT not NULL,
-                assignedBy TEXT not NULL,
-                claimDate INTEGER,
-                reason TEXT
-            )
-        ''')
+#
+# JSON fields
+#
+# claims are a list of clams:
+#     claimedBy TEXT not NULL,
+#     assignedBy TEXT not NULL,
+#     claimDate INTEGER,
+#     reason TEXT
+#
+# changeSets are a list of changes:
+#     commitId       TEXT not NULL,
+#     authorEmail    TEXT not NULL,
+#     comment        TEXT,
+#     affectedPaths  list of TEXT,
+#
 
         conn.commit()
 
@@ -306,28 +336,25 @@ def db_add_build(build_info):
     result=build_info['result']
     duration=build_info['duration']
     timestamp=build_info['timestamp']
+    url=build_info['url']
+
+    changeSets_str = json.dumps(build_info['changeSets'])
+    claims_str = json.dumps(build_info['claims'])
+
     cursor.execute('''
         INSERT INTO builds
-        (fullDisplayName,description,result,duration,timestamp)
-        VALUES (?,?,?,?,?)
-    ''', (fullDisplayName,description,result,duration,timestamp))
-
-    claimedBy=build_info.get('claimedBy')
-    if (claimedBy):
-        assignedBy=build_info['assignedBy']
-        claimDate=build_info['claimDate']
-        reason=build_info['reason']
-        cursor.execute('''
-            INSERT INTO claims
-            (fullDisplayName,claimedBy,assignedBy,claimDate,reason)
-            VALUES (?,?,?,?,?)
-        ''', (fullDisplayName,claimedBy,assignedBy,claimDate,reason))
+        (fullDisplayName,description,result,duration,timestamp,url,
+         changeSets,claims)
+        VALUES (?,?,?,?,?,?,?,?)
+    ''', (fullDisplayName,description,result,duration,timestamp,url,
+          changeSets_str,claims_str))
 
 def db_get_build_info(job_name,build_num):
     fullDisplayName=get_full_display_name(job_name,build_num)
 
     cursor.execute('''
-        SELECT fullDisplayName,description,result,duration,timestamp
+        SELECT fullDisplayName,description,result,duration,timestamp,url,
+               changeSets,claims
         FROM builds
         WHERE fullDisplayName = ?
     ''', (fullDisplayName,))
@@ -343,19 +370,10 @@ def db_get_build_info(job_name,build_num):
     build_info['result']          = row[2]
     build_info['duration']        = row[3]
     build_info['timestamp']       = row[4]
+    build_info['url']             = row[5]
+    build_info['changeSets']      = json.loads(row[6])
+    build_info['claims']          = json.loads(row[7])
 
-    cursor.execute('''
-        SELECT claimedBy,assignedBy,claimDate,reason
-        FROM claims
-        WHERE fullDisplayName = ?
-    ''', (fullDisplayName,))
-    row=cursor.fetchone()
-    if row:
-        build_info['claimedBy']   = row[0]
-        build_info['assignedBy']  = row[1]
-        build_info['claimDate']   = row[2]
-        build_info['reason']      = row[3]
-                       
     return build_info
 
 def db_add_build_log(fullDisplayName,build_log):
@@ -390,17 +408,17 @@ def db_for_each_build(job_infos, build_pred, callback,f):
             builds = job_info['builds']
                     
             for build in builds:
+                build_info = db_get_build_info(job_name,build)
+                if (build_info is None):
+                    continue
+
                 if (build_pred):
-                    pred=build_pred(job_name,build)
+                    pred=build_pred(build_info)
                     if (pred is None):
                         break
                     if (pred):
                         continue
                 
-                build_info = db_get_build_info(job_name,build)
-                if (build_info is None):
-                    continue
-
                 callback(f,job_info,build_info)
 
         except jenkins.JenkinsException as e:
@@ -521,10 +539,24 @@ def init(org_path):
 def finish():
     close_sqlite()
 
-def print_build_json(job_info,build_info):
+def print_build_json(f,job_info,build_info):
     pretty_json_string = json.dumps(build_info, indent=4)
-    print(pretty_json_string)
+    print(pretty_json_string,file=f)
     return False
+
+def get_claim_info(build_info):
+    claim_infos = build_info['claims']
+    if (claim_infos and len(claim_infos)>0):
+        return claim_infos[0]
+    else:
+        return None
+
+def get_claimedBy(build_info):
+    claim_info = get_claim_info(build_info)
+    if (claim_info):
+        return claim_info['claimedBy']
+    else:
+        return None
 
 #
 # Skip if it already exists or is in progress
@@ -592,11 +624,12 @@ def print_build_internal(f,job_info, build_info,verbose):
             print(" (lastSuccess #%d)" % job_info['lastSuccessfulBuild'],
                   end='',file=f)
 
-        claimedBy = build_info.get('claimedBy')
-        if (claimedBy):
+        claim_info = get_claim_info(build_info)
+        if (claim_info):
+            claimedBy = claim_info['claimedBy']
             print(" claimed by %s" % claimedBy,end='',file=f)
             if (verbose):
-                reason=build_info['reason']
+                reason=claim_info['reason']
                 if (reason):
                     print('',file=f)
                     print(textwrap.indent(reason,'    '),end='',file=f)
@@ -630,15 +663,39 @@ def truncate_to_n_lines(s, n):
     return '\n'.join(lines[:n])
 
 scan_log_func = None
-scan_log_limit = 0
-def scan_log(f,job_info,buildlog):
-    global scan_log_func,scan_log_limit
+def get_scan_log(buildlog):
+    global scan_log_func
     fin=io.StringIO(buildlog)
     s=scan_log_func(fin)
-    if (scan_log_limit > 0):
-        print(truncate_to_n_lines(s['summary'],scan_log_limit),file=f)
-    else:
-        print(s['summary'],file=f)
+    return s
+
+scan_log_limit = 0
+def print_scan_log(f,job_info,buildlog):
+    global scan_log_limit
+    s=get_scan_log(buildlog)
+    if (s['summary']):
+        if (scan_log_limit > 0):
+            print(truncate_to_n_lines(s['summary'],scan_log_limit),file=f)
+        else:
+            print(s['summary'],file=f)
+
+def print_changeSets(f,build_info):
+    changeSets=build_info['changeSets']
+    if (len(changeSets)>0):
+        print("ChangeSets:",file=f)
+        for c in changeSets:
+            print("    %s: %s"
+                  % (c['authorEmail'],c['commitId']),
+                  file=f)
+            for a in c['affectedPaths']:
+                print("        "+a,file=f)
+            print("",file=f)
+            print(textwrap.indent(c['comment'],'        '),file=f)
+
+def print_build_summary(f,job_info,build_info,buildlog):
+    print_header(f,job_info,build_info)
+    print_scan_log(f,job_info,buildlog)
+    print_changeSets(f,build_info)
 
 enable_header = False
 first_header = True
@@ -660,31 +717,27 @@ def print_header(f,job_info,build_info):
             if (r == "FAILURE"):
                 log_header+=f" (lastSuccess #{job_info['lastSuccessfulBuild']})"
 
-        claimedBy = build_info.get('claimedBy')
+        claimedBy = get_claimedBy(build_info)
         if (claimedBy):
             log_header+=f" claimed by {claimedBy}"
 
 
         print(log_header,file=f)
         print('-'*len(log_header),file=f)
-        print("",file=f)
-
+    print("",file=f)
 
 def scan_log_callback(f,job_info,build_info):
-    print_header(f,job_info,build_info)
-
     name=build_info['name']
     num=build_info['number']
     buildlog=get_build_console(name,num)
-    scan_log(buildlog)
+    print_build_summary(f,job_info,build_info,buildlog)
+
 
 def db_scan_log_callback(f,job_info,build_info):
-    print_header(f,job_info,build_info)
-
     name=build_info['name']
     num=build_info['number']
     buildlog=db_get_build_log(name,num)
-    scan_log(f,job_info,buildlog)
+    print_build_summary(f,job_info,build_info,buildlog)
 
 def db_print_log_callback(f,job_info,build_info):
     print_header(f,job_info,build_info)
@@ -694,6 +747,43 @@ def db_print_log_callback(f,job_info,build_info):
     buildlog=db_get_build_log(name,num)
     print(f,buildlog)
 
+def skip_success(build_info):
+    if (build_info['result'] == "SUCCESS"):
+        return True
+    return False
+
+def kvetch(f,job_info,build_info,buildlog):
+    global enable_header
+    enable_header=True
+    print_header(f,job_info,build_info)
+    print("Kvetching",file=f)
+
+    msg=io.StringIO()
+    s=get_scan_log(buildlog)
+
+    if (s['is_system_error'] == True):
+        print("This build looks like an infrastructure issue. Claim it:",file=msg)
+    else:
+        print("This build looks like a developer issue. Claim it: ",file=msg)
+    print(build_info['url'],file=msg)
+
+    print_header(msg,job_info,build_info)
+    if (s['summary']):
+        print(s['summary'],file=msg)
+    print_changeSets(msg,build_info)
+
+    subject="Kvetch:"
+    subject+=" "+build_info['fullDisplayName']
+    body=msg.getvalue()
+    send_email(build_monitor, subject, body)
+
+
+def db_kvetch_callback(f,job_info,build_info):
+    name=build_info['name']
+    num=build_info['number']
+    buildlog=db_get_build_log(name,num)
+    kvetch(f,job_info,build_info,buildlog)
+
 #
 # Main Program
 #
@@ -701,7 +791,7 @@ def db_print_log_callback(f,job_info,build_info):
 if __name__ == "__main__":
     import getopt
 
-    opts,args = getopt.getopt(sys.argv[1:], 'b:c:j:v:adflmnqrs')
+    opts,args = getopt.getopt(sys.argv[1:], 'b:c:j:v:adfklmnqrsx')
 
     if len(args) > 0:
         print("Usage: %s" % sys.argv[0])
@@ -786,15 +876,22 @@ if __name__ == "__main__":
         
 
     whatis=None
+    build_filter=None
+    if '-f' in opts:
+        build_filter=skip_success
+
     if '-d' in opts:
         whatis="status"
-        db_for_each_build(job_infos,None,print_build,out)
+        db_for_each_build(job_infos,build_filter,print_build,out)
     elif '-l' in opts:
         whatis="build log"
-        db_for_each_build(job_infos,None,db_print_log_callback,out)
-    elif '-f' in opts:
+        db_for_each_build(job_infos,build_filter,db_print_log_callback,out)
+    elif '-x' in opts:
         whatis="scan log"
-        db_for_each_build(job_infos,None,db_scan_log_callback,out)
+        db_for_each_build(job_infos,build_filter,db_scan_log_callback,out)
+    elif '-k' in opts:
+        db_for_each_build(job_infos,build_filter,db_kvetch_callback,out)
+
 
     if (whatis):
         if '-m' in opts:
@@ -806,7 +903,10 @@ if __name__ == "__main__":
                     subject+=" "+job
 
             subject+=" "+whatis
-            send_email(build_monitor, subject, out.getvalue()) 
+            body = out.getvalue()
+            if (body == ""):
+                body = "All builds were successful"
+            send_email(build_monitor, subject, body)
         
     finish()
     sys.exit(0)
