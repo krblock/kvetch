@@ -619,15 +619,43 @@ def debug_print_jobs_builds(job_infos):
         else:
             print("%s: empty" % ji['name'])
 
+def time_elapsed_since(timestamp):
+    """
+    Returns the time elapsed since the given timestamp.
+
+    Parameters:
+    - timestamp (datetime): A datetime object representing the past time.
+
+    Returns:
+    - str: A string describing the time elapsed.
+    """
+    now = datetime.datetime.now()
+    elapsed = now - datetime.datetime.fromtimestamp(timestamp)
+
+    days = elapsed.days
+    seconds = elapsed.seconds
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+
+    parts = []
+    if days > 0:
+        parts.append(f"{days} day{'s' if days != 1 else ''}")
+    if hours > 0:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    elif minutes > 0:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    elif secs > 0 or not parts:
+        parts.append(f"{secs} second{'s' if secs != 1 else ''}")
+
+    return ", ".join(parts) + " ago"
+
 def print_build_internal(f,job_info, build_info,verbose):
     print("%-40s #%-4d" % (build_info['name'], build_info['number']),
           end='', file=f)
     if (verbose):
-        print(" (%s, %s, %s)" %
-              (build_info['description'],
-               str(datetime.timedelta(seconds=int(build_info['duration'])//1000)),
-               datetime.datetime.fromtimestamp(
-                   int(build_info['timestamp'])//1000)),
+        print(" (%s)" %
+              (build_info['description']),
               end='',file=f)
     if (build_info['inProgress']):
         print(" : RUNNING",end='',file=f)
@@ -635,7 +663,16 @@ def print_build_internal(f,job_info, build_info,verbose):
         r=build_info['result']
         print(" : %s" % r, end='',file=f)
         if (r == "FAILURE"):
-            print(" (lastSuccess #%d)" % job_info['lastSuccessfulBuild'],
+            firstFailure=job_info['lastSuccessfulBuild']+1
+            if (firstFailure == build_info['number']):
+                firstFailureTime = build_info['timestamp']
+            else:
+                failed_build_info = db_get_build_info(job_info['name'],
+                                                      firstFailure)
+                firstFailureTime = failed_build_info['timestamp']
+
+            print(" (#%d, %s)" %
+                  (firstFailure,time_elapsed_since(int(firstFailureTime)//1000)),
                   end='',file=f)
 
         claim_info = get_claim_info(build_info)
@@ -728,7 +765,16 @@ def print_header(f,job_info,build_info):
             r=build_info['result']
             log_header+=f" : {r}"
             if (r == "FAILURE"):
-                log_header+=f" (lastSuccess #{job_info['lastSuccessfulBuild']})"
+                firstFailure=job_info['lastSuccessfulBuild']+1
+                if (firstFailure == build_info['number']):
+                    firstFailureTime = build_info['timestamp']
+                else:
+                    failed_build_info = db_get_build_info(job_info['name'],
+                                                          firstFailure)
+                    firstFailureTime = failed_build_info['timestamp']
+
+                elapsed_time = time_elapsed_since(int(firstFailureTime)//1000)
+                log_header+=f" (#{firstFailure}, {elapsed_time})"
 
         claimedBy = get_claimedBy(build_info)
         if (claimedBy):
