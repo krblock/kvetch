@@ -83,6 +83,8 @@ def get_job_info(job_name):
     for build in real_job_info['builds']:
         builds.append(build['number'])
 
+#    Use for for debug information
+#    job_info['json']                = real_job_info
     job_info['name']                = job_name
     job_info['builds']              = builds
     job_info['lastBuild']           = get_job_num(real_job_info,'lastBuild')
@@ -185,15 +187,15 @@ def for_each_build(job_infos, build_pred, callback,f):
             builds = job_info['builds']
                     
             for build in builds:
+                build_info = get_build_info(job_name,build)
+
                 if (build_pred):
-                    pred=build_pred(job_name,build)
+                    pred=build_pred(job_info,build_info)
                     if (pred is None):
                         break
                     if (pred):
                         continue
                 
-                build_info = get_build_info(job_name,build)
-
                 callback(f,job_info,build_info)
                 ret=True
 
@@ -321,14 +323,23 @@ def init_sqlite():
                            (str(schema_version)))
             conn.commit()
 
-def db_build_exists(fullDisplayName):
+def db_build_exists(job_info,build_info):
+    fullDisplayName=build_info['fullDisplayName']
     cursor.execute('''
-        SELECT EXISTS(
-            SELECT 1 FROM builds
-            WHERE fullDisplayName = ?)
+        SELECT claims FROM builds
+        WHERE fullDisplayName = ?
     ''', (fullDisplayName,))
     row = cursor.fetchone()
-    return row[0] == 1
+    if (row):
+        claims_str = json.dumps(build_info['claims'])
+        if (row[0] != claims_str):
+            cursor.execute('''
+                UPDATE builds set claims = ?
+                WHERE fullDisplayName = ?
+            ''', (claims_str,fullDisplayName))
+        return True
+    else:
+        return False
 
 def db_add_build(build_info):
     fullDisplayName=build_info['fullDisplayName']
@@ -540,6 +551,10 @@ def finish():
     close_sqlite()
 
 def print_build_json(f,job_info,build_info):
+    pretty_json_string = json.dumps(job_info, indent=4)
+    print(pretty_json_string,file=f)
+    print("",file=f)
+
     pretty_json_string = json.dumps(build_info, indent=4)
     print(pretty_json_string,file=f)
     return False
@@ -563,16 +578,15 @@ def get_claimedBy(build_info):
 #
 last_job=""
 skip_count=0
-def skip_build(job,build):
+def skip_build(job_info,build_info):
     global last_job, skip_count
-    fullDisplayName=get_full_display_name(job,build)
-    if db_build_exists(fullDisplayName):
-        if (job == last_job):
+    if db_build_exists(job_info,build_info):
+        if (job_info['name'] == last_job):
             skip_count+=1
             if (skip_count > 3):
                 return None # Abort
         else:
-            last_job = job
+            last_job = job_info['name']
             skip_count = 1
         return True # Skip
     skip_count=0
@@ -695,7 +709,6 @@ def print_changeSets(f,build_info):
 def print_build_summary(f,job_info,build_info,buildlog):
     print_header(f,job_info,build_info)
     print_scan_log(f,job_info,buildlog)
-    print_changeSets(f,build_info)
 
 enable_header = False
 first_header = True
@@ -752,18 +765,22 @@ def skip_success(build_info):
         return True
     return False
 
-def kvetch(f,job_info,build_info,buildlog):
+def kvetch(f,job_info,build_info,buildlog,do_email):
     global enable_header
     enable_header=True
-    print_header(f,job_info,build_info)
-    print("Kvetching",file=f)
+    if (do_email):
+        print_header(f,job_info,build_info)
+        print("Kvetching",file=f)
 
     msg=io.StringIO()
     s=get_scan_log(buildlog)
 
-    if (s['is_system_error'] == True):
+    email_to = None
+    if (s['blame'] == "System"):
+        email_to = build_monitor
         print("This build looks like an infrastructure issue. Claim it:",file=msg)
     else:
+        email_to = build_monitor
         print("This build looks like a developer issue. Claim it: ",file=msg)
     print(build_info['url'],file=msg)
 
@@ -775,14 +792,23 @@ def kvetch(f,job_info,build_info,buildlog):
     subject="Kvetch:"
     subject+=" "+build_info['fullDisplayName']
     body=msg.getvalue()
-    send_email(build_monitor, subject, body)
+    if (do_email):
+        send_email(email_to, subject, body)
+    else:
+        print(subject,file=f)
+        print(body,file=f)
 
-
-def db_kvetch_callback(f,job_info,build_info):
+def db_kvetch_internal_callback(f,job_info,build_info, do_email):
     name=build_info['name']
     num=build_info['number']
     buildlog=db_get_build_log(name,num)
-    kvetch(f,job_info,build_info,buildlog)
+    kvetch(f,job_info,build_info,buildlog,do_email)
+
+def db_kvetch_print_callback(f,job_info,build_info):
+    db_kvetch_internal_callback(f,job_info,build_info,False)
+
+def db_kvetch_email_callback(f,job_info,build_info):
+    db_kvetch_internal_callback(f,job_info,build_info,True)
 
 #
 # Main Program
@@ -890,7 +916,10 @@ if __name__ == "__main__":
         whatis="scan log"
         db_for_each_build(job_infos,build_filter,db_scan_log_callback,out)
     elif '-k' in opts:
-        db_for_each_build(job_infos,build_filter,db_kvetch_callback,out)
+        callback=db_kvetch_print_callback
+        if '-m' in opts:
+            callback=db_kvetch_email_callback
+        db_for_each_build(job_infos,build_filter,callback,sys.stdout)
 
 
     if (whatis):
