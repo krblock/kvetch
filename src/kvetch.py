@@ -207,6 +207,11 @@ def for_each_build(job_infos, build_pred, callback,f):
 def get_full_display_name(job_name, build_num):
     return job_name.replace("/", " » ", 1) + " #" + str(build_num)
 
+def get_developers(build_info):
+    developers=[]
+    for c in build_info['changeSets']:
+        developers.append(c['authorEmail'])
+    return developers
 #
 # Org Chart
 #
@@ -502,13 +507,15 @@ from_email=None
 smtp_server=None
 smtp_port=None
 
-def send_email(to_email, subject, body):
+def send_email(to_email, cc_email, subject, body):
     global from_email, smtp_server, smtp_port
     msg = EmailMessage()
     msg.set_content(body)
     msg["Subject"] = subject
     msg["From"] = from_email
     msg["To"] = to_email
+    if (cc_email):
+        msg['Cc'] = cc_email
 
     try:
         with smtplib.SMTP(smtp_server, smtp_port) as server:
@@ -549,6 +556,11 @@ def init(org_path):
 
 def finish():
     close_sqlite()
+
+def print_json(f,dict):
+    pretty_json_string = json.dumps(dict, indent=4)
+    print(pretty_json_string,file=f)
+    print("",file=f)
 
 def print_build_json(f,job_info,build_info):
     pretty_json_string = json.dumps(job_info, indent=4)
@@ -619,19 +631,13 @@ def debug_print_jobs_builds(job_infos):
         else:
             print("%s: empty" % ji['name'])
 
-def time_elapsed_since(timestamp):
-    """
-    Returns the time elapsed since the given timestamp.
-
-    Parameters:
-    - timestamp (datetime): A datetime object representing the past time.
-
-    Returns:
-    - str: A string describing the time elapsed.
-    """
+def time_elapsed(timestamp):
     now = datetime.datetime.now()
-    elapsed = now - datetime.datetime.fromtimestamp(timestamp)
+    elapsed = now - datetime.datetime.fromtimestamp(timestamp//1000)
 
+    return elapsed
+
+def time_elapsed_str(elapsed):
     days = elapsed.days
     seconds = elapsed.seconds
     hours = seconds // 3600
@@ -650,6 +656,18 @@ def time_elapsed_since(timestamp):
 
     return ", ".join(parts) + " ago"
 
+def elapsed_failure_time(firstFailure,job_info,build_info):
+    if (firstFailure == build_info['number']):
+        firstFailureTime = build_info['timestamp']
+    else:
+        failed_build_info = db_get_build_info(job_info['name'],
+                                                      firstFailure)
+        if (failed_build_info):
+            firstFailureTime = failed_build_info['timestamp']
+        else:
+            firstFailureTime = build_info['timestamp']
+    return time_elapsed(firstFailureTime)
+
 def print_build_internal(f,job_info, build_info,verbose):
     print("%-40s #%-4d" % (build_info['name'], build_info['number']),
           end='', file=f)
@@ -664,15 +682,9 @@ def print_build_internal(f,job_info, build_info,verbose):
         print(" : %s" % r, end='',file=f)
         if (r == "FAILURE"):
             firstFailure=job_info['lastSuccessfulBuild']+1
-            if (firstFailure == build_info['number']):
-                firstFailureTime = build_info['timestamp']
-            else:
-                failed_build_info = db_get_build_info(job_info['name'],
-                                                      firstFailure)
-                firstFailureTime = failed_build_info['timestamp']
-
+            elapsedFailureTime = elapsed_failure_time(firstFailure,job_info,build_info)
             print(" (#%d, %s)" %
-                  (firstFailure,time_elapsed_since(int(firstFailureTime)//1000)),
+                  (firstFailure,time_elapsed_str(elapsedFailureTime)),
                   end='',file=f)
 
         claim_info = get_claim_info(build_info)
@@ -766,14 +778,8 @@ def print_header(f,job_info,build_info):
             log_header+=f" : {r}"
             if (r == "FAILURE"):
                 firstFailure=job_info['lastSuccessfulBuild']+1
-                if (firstFailure == build_info['number']):
-                    firstFailureTime = build_info['timestamp']
-                else:
-                    failed_build_info = db_get_build_info(job_info['name'],
-                                                          firstFailure)
-                    firstFailureTime = failed_build_info['timestamp']
-
-                elapsed_time = time_elapsed_since(int(firstFailureTime)//1000)
+                elapsedFailureTime = elapsed_failure_time(firstFailure,job_info,build_info)
+                elapsed_time = time_elapsed_str(elapsedFailureTime)
                 log_header+=f" (#{firstFailure}, {elapsed_time})"
 
         claimedBy = get_claimedBy(build_info)
@@ -822,13 +828,59 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     s=get_scan_log(buildlog)
 
     email_to = None
+    email_cc = None
+    body=""
+    claimedBy = get_claimedBy(build_info)
+    firstFailure=job_info['lastSuccessfulBuild']+1
+    elapsedFailureTime = elapsed_failure_time(firstFailure,job_info,build_info)
+    developers=get_developers(build_info)
+
     if (s['blame'] == "System"):
         email_to = build_monitor
-        print("This build looks like an infrastructure issue. Claim it:",file=msg)
+        body+="Dear Build Monitors,\n\n"
+        body+="This build failure looks like an infrastructure issue.\n"
+        if (claimedBy):
+            if (claimedBy == "SYSTEM"):
+                body+="It has already claimed by System"
+                body+=build_info['url'] + "\n"
+            else:
+                body+=f"It is currently claimed by {claimedBy}. Can you look to see if the claim should be reset to SYSTEM?\n"
+            body+=build_info['url'] + "\n"
+        else:
+            body+="Please claim it: "+ build_info['url'] + "\n\n"
     else:
-        email_to = build_monitor
-        print("This build looks like a developer issue. Claim it: ",file=msg)
-    print(build_info['url'],file=msg)
+        if (claimedBy):
+            if (claimedBy == "SYSTEM"):
+                email_to = build_monitor
+                body+="Dear Build Monitors\n\n"
+                body+="This build is still failing and is assigned to SYSTEM, but it does not look like a system failure to me. Can you take a look?\n"
+                body+=build_info['url'] + "\n"
+            else:
+                email_to = build_monitor # TBD: claimedBy
+                body+="Dear " + claimedBy + ",\n\n"
+                if (elapsedFailureTime.days > 1):
+                    boss=get_lead_of(claimedBy)
+                    email_cc = build_monitor # TBD: boss
+                body+="This build is still failing. Please make fixing it your top priority. If the failure is no longer your, please reassign the claim.\n"
+                body+=build_info['url'] + "\n"
+        else:
+            if (firstFailure < build_info['number']):
+                email_to = build_monitor
+                body+="Dear Build Monitor,\n\n"
+                body+="This build failure looks like a developer issue, but it was not claimed. Can you take a look?\n"
+            elif (len(developers)==0):
+                email_to = build_monitor
+                body+="Dear Build Monitor,\n\n"
+                body+="This build failure looks like a developer issue, but there are no commits. Can you take a look?\n"
+            else:
+                dev_emails=",".join(developers)
+                email_to = build_monitor # TBD: dev_emails
+                body+=f"Dear {dev_emails},\n\n"
+                body+="This build failure looks like a developer issue. Please claim it if it is yours:\n"
+
+            body+=build_info['url'] + "\n"
+
+    body+="\nSincerely,\nKvetch\n\n"
 
     print_header(msg,job_info,build_info)
     if (s['summary']):
@@ -837,9 +889,9 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
 
     subject="Kvetch:"
     subject+=" "+build_info['fullDisplayName']
-    body=msg.getvalue()
+    body+=msg.getvalue()
     if (do_email):
-        send_email(email_to, subject, body)
+        send_email(email_to, email_cc, subject, body)
     else:
         print(subject,file=f)
         print(body,file=f)
@@ -981,7 +1033,7 @@ if __name__ == "__main__":
             body = out.getvalue()
             if (body == ""):
                 body = "All builds were successful"
-            send_email(build_monitor, subject, body)
+            send_email(build_monitor, None, subject, body)
         
     finish()
     sys.exit(0)
