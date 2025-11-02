@@ -861,7 +861,7 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 if (elapsedFailureTime.days > 1):
                     boss=get_lead_of(claimedBy)
                     email_cc = build_monitor # TBD: boss
-                body+="This build is still failing. Please make fixing it your top priority. If the failure is no longer your, please reassign the claim.\n"
+                body+="This build is still failing. Please make fixing it your top priority. If the failure is no longer yours, please reassign the claim.\n"
                 body+=build_info['url'] + "\n"
         else:
             if (firstFailure < build_info['number']):
@@ -983,7 +983,13 @@ if __name__ == "__main__":
     # Populate new data into DB from Jenkins unless specifically suspended
     #
     if (not '-n' in opts):
-        if (for_each_build(job_infos, skip_build, record_build,sys.stdout)):
+        #
+        # Regardless of the builds selected by the user, we want to populate
+        # all build history.
+        #
+        pjob_infos = get_job_infos(job_names,[])
+
+        if (for_each_build(pjob_infos, skip_build, record_build,sys.stdout)):
             print('')
             commit_sqlite()
 
@@ -992,7 +998,7 @@ if __name__ == "__main__":
     #
     if (count_builds(job_infos) > 1):
         enable_header = True
-        scan_log_limit = 20
+        scan_log_limit = 30
 
     out=sys.stdout
     if '-m' in opts:
