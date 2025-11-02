@@ -208,9 +208,9 @@ def get_full_display_name(job_name, build_num):
     return job_name.replace("/", " » ", 1) + " #" + str(build_num)
 
 def get_developers(build_info):
-    developers=[]
+    developers=set()
     for c in build_info['changeSets']:
-        developers.append(c['authorEmail'])
+        developers.add(c['authorEmail'])
     return developers
 #
 # Org Chart
@@ -277,6 +277,16 @@ def init_sqlite():
             CREATE TABLE logfiles (
                 fullDisplayName TEXT PRIMARY KEY,
                 contents BLOB
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE kvetch (
+                jobName         TEXT PRIMARY KEY,
+                target          TEXT,
+                build           INTEGER,
+                timestamp       INTEGER,
+                level           INTEGER
             )
         ''')
 
@@ -410,6 +420,40 @@ def db_get_build_log(job_name,build_num):
     row=cursor.fetchone()
     build_log=zlib.decompress(row[0]).decode('utf-8')
     return build_log
+
+def db_get_kvetch_info(job_name):
+    cursor.execute('''
+        SELECT jobName, target, build, timestamp, level
+        FROM kvetch
+        WHERE jobName = ?
+    ''', (job_name,))
+    row=cursor.fetchone()
+    if (not row):
+        return None
+    else:
+        kvetch_info = {}
+        kvetch_info['jobName']   = row[0]
+        kvetch_info['target']    = row[1]
+        kvetch_info['build']     = row[2]
+        kvetch_info['timestamp'] = row[3]
+        kvetch_info['level']     = row[4]
+        return kvetch_info
+
+def db_set_kvetch_info(kvetch_info):
+    cursor.execute('''
+        INSERT INTO kvetch (jobName, target, build, timestamp, level)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(jobName) DO UPDATE SET
+            target    = excluded.target,
+            build     = excluded.build,
+            timestamp = excluded.timestamp,
+            level     = excluded.level
+    ''', (kvetch_info['jobName'],
+          kvetch_info['target'],
+          kvetch_info['build'],
+          kvetch_info['timestamp'],
+          kvetch_info['level']))
+    conn.commit()
 
 def commit_sqlite():
     conn.commit()
@@ -822,18 +866,17 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     enable_header=True
     if (do_email):
         print_header(f,job_info,build_info)
-        print("Kvetching",file=f)
-
-    msg=io.StringIO()
-    s=get_scan_log(buildlog)
 
     email_to = None
     email_cc = None
     body=""
-    claimedBy = get_claimedBy(build_info)
     firstFailure=job_info['lastSuccessfulBuild']+1
     elapsedFailureTime = elapsed_failure_time(firstFailure,job_info,build_info)
+    claimedBy = get_claimedBy(build_info)
     developers=get_developers(build_info)
+
+    msg=io.StringIO()
+    s=get_scan_log(buildlog)
 
     if (s['blame'] == "System"):
         email_to = build_monitor
@@ -841,8 +884,7 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
         body+="This build failure looks like an infrastructure issue.\n"
         if (claimedBy):
             if (claimedBy == "SYSTEM"):
-                body+="It has already claimed by System"
-                body+=build_info['url'] + "\n"
+                body+="It has already claimed by System\n"
             else:
                 body+=f"It is currently claimed by {claimedBy}. Can you look to see if the claim should be reset to SYSTEM?\n"
             body+=build_info['url'] + "\n"
@@ -882,6 +924,26 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
 
     body+="\nSincerely,\nKvetch\n\n"
 
+    kvetch_info = db_get_kvetch_info(build_info['name'])
+    if (kvetch_info):
+        if (kvetch_info['build']==build_info['number']):
+            if (kvetch_info['target']==email_to):
+                elapsedKvetchTime=time_elapsed(kvetch_info['timestamp'])
+                if ((elapsedKvetchTime.days < 1) and
+                    (elapsedKvetchTime.seconds < (23*(60*60)))):
+                    # has not been over a day yet, do not kvetch again
+                    print("Skipping kvetch, last %s ago"
+                          % time_elapsed_str(elapsedKvetchTime), file=f)
+                    return
+    else:
+        kvetch_info={}
+        kvetch_info['jobName']=build_info['name']
+
+    kvetch_info['build'] = build_info['number']
+    kvetch_info['target'] = email_to
+    kvetch_info['timestamp'] = datetime.datetime.now().timestamp() * 1000
+    kvetch_info['level'] = 1
+
     print_header(msg,job_info,build_info)
     if (s['summary']):
         print(s['summary'],file=msg)
@@ -892,6 +954,8 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     body+=msg.getvalue()
     if (do_email):
         send_email(email_to, email_cc, subject, body)
+        print(kvetch_info)
+        db_set_kvetch_info(kvetch_info)
     else:
         print(subject,file=f)
         print(body,file=f)
