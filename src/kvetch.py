@@ -62,6 +62,7 @@ def extract_job_component(url):
 def get_jobs(view):
     jobs=[]
     view_jobs = server.get_jobs(view_name=view)
+
     for job in view_jobs:
         job_name = job['name']
 
@@ -118,8 +119,12 @@ def get_job_infos(jobs_names,build_ids):
                     if (i.isdigit()):
                         bnums.append(int(i))
                     else:
-                        if (job_info[i]):
+                        if (job_info.get(i)):
                             bnums.append(int(job_info[i]))
+                        else:
+                            if (not i in job_info):
+                                raise RuntimeError(f"Unrecognized build {i}")
+
                 job_info['builds'] = bnums
             else:
                 job_info=get_job_info(i)
@@ -925,7 +930,8 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     body+="\nSincerely,\nKvetch\n\n"
 
     kvetch_info = db_get_kvetch_info(build_info['name'])
-    if (kvetch_info):
+    # Only skip kvetching if we are sending an email
+    if (kvetch_info and do_email):
         if (kvetch_info['build']==build_info['number']):
             if (kvetch_info['target']==email_to):
                 elapsedKvetchTime=time_elapsed(kvetch_info['timestamp'])
@@ -1019,9 +1025,18 @@ if __name__ == "__main__":
     init(org_path)
 
     if (view_name):
+        try:
+            jobs_from_view=get_jobs(view_name)
+        except Exception as e:
+            print("Error: unable to load view: %s" % e)
+            sys.exit(1)
         job_names.extend(get_jobs(view_name))
 
-    job_infos = get_job_infos(job_names,build_ids)
+    try:
+        job_infos = get_job_infos(job_names,build_ids)
+    except Exception as e:
+        print("Error: unable to load jobs: %s" % e)
+        sys.exit(1)
 
     #
     # These options only pull data from Jenkins
