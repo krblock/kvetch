@@ -150,15 +150,16 @@ def get_build_info(job,build):
     build_info['url']             = real_build_info['url']
 
     change_set=[]
-    real_changeSet = real_build_info.get('changeSet')
-    if (real_changeSet):
-        for real_item in real_changeSet['items']:
-            item={}
-            item['authorEmail'] = real_item['authorEmail']
-            item['comment'] = real_item['comment']
-            item['affectedPaths'] = real_item['affectedPaths']
-            item['commitId'] = real_item['commitId']
-            change_set.append(item)
+    real_changeSets = real_build_info.get('changeSets')
+    if (real_changeSets):
+        for real_changeSet in real_changeSets:
+            for real_item in real_changeSet['items']:
+                item={}
+                item['authorEmail'] = real_item['authorEmail']
+                item['comment'] = real_item['comment']
+                item['affectedPaths'] = real_item['affectedPaths']
+                item['commitId'] = real_item['commitId']
+                change_set.append(item)
 
     build_info['changeSets'] = change_set
 
@@ -217,23 +218,31 @@ def get_developers(build_info):
     for c in build_info['changeSets']:
         developers.add(c['authorEmail'])
     return developers
-#
+
 # Org Chart
-#
+
 member_to_lead = {}
 lead_to_members = {}
+member_to_email = {}
+
+def get_username(user):
+    username=user["username"]
+    email=user["email"]
+    member_to_email[username]=email
+    return username
 
 def process_team(team, parent_lead=None):
-    lead = team.get("lead")
+    lead = get_username(team.get("lead"))
     if lead:
         lead_to_members.setdefault(lead, [])
         if parent_lead:
             member_to_lead[lead] = parent_lead
     for member in team.get("members", []):
-        member_to_lead[member] = lead
-        lead_to_members[lead].append(member)
+        member_name = get_username(member)
+        member_to_lead[member_name] = lead
+        lead_to_members[lead].append(member_name)
     for subteam in team.get("teams", []):
-        process_team(subteam, lead)
+        process_team(subteam,lead)
 
 # Load org chart from corrected JSON file
 def init_org(org_file):
@@ -249,6 +258,9 @@ def get_lead_of(member_name):
 
 def get_members_of(lead_name):
     return lead_to_members.get(lead_name, [])
+
+def get_email_of(username):
+    return member_to_email[username]
 
 #
 # Sqlite
@@ -872,6 +884,21 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     if (do_email):
         print_header(f,job_info,build_info)
 
+    if (build_info['result']=='SUCCESS'):
+        if (build_info['number']-1 == job_info['lastFailedBuild']):
+            kvetch_info = db_get_kvetch_info(build_info['name'])
+            if (kvetch_info and do_email):
+                #TBD: add claimee even if not previously kvetched at?
+                send_email(kvetch_info['target'],
+                           None,
+                           f"kvetch: {build_info['fullDisplayName']} successful again",
+                           build_info['url']+"\n")
+            else:
+                print(f"{build_info['fullDisplayName']} successful again")
+                if (kvetch_info):
+                    print(f"let {kvetch_info['target']} know")
+        return
+
     email_to = None
     email_cc = None
     body=""
@@ -903,11 +930,19 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 body+="This build is still failing and is assigned to SYSTEM, but it does not look like a system failure to me. Can you take a look?\n"
                 body+=build_info['url'] + "\n"
             else:
-                email_to = build_monitor # TBD: claimedBy
+                email_to = get_email_of(claimedBy)
                 body+="Dear " + claimedBy + ",\n\n"
+
+                body+=f"TBD: sending to {build_monitor} instad of {email_to}\n"
+                email_to = build_monitor # TBD: claimedBy
+
                 if (elapsedFailureTime.days > 1):
                     boss=get_lead_of(claimedBy)
+                    email_cc = get_email_of(boss)
+
+                    body+=f"TBD: cc {build_monitor} instead of {email_cc}\n"
                     email_cc = build_monitor # TBD: boss
+
                 body+="This build is still failing. Please make fixing it your top priority. If the failure is no longer yours, please reassign the claim.\n"
                 body+=build_info['url'] + "\n"
         else:
@@ -921,8 +956,12 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 body+="This build failure looks like a developer issue, but there are no commits. Can you take a look?\n"
             else:
                 dev_emails=",".join(developers)
-                email_to = build_monitor # TBD: dev_emails
+                email_to = dev_emails
                 body+=f"Dear {dev_emails},\n\n"
+
+                body+=f"TBD: Sending to {build_monitor} instead {email_to}\n"
+                email_to = build_monitor # TBD: dev_emails
+
                 body+="This build failure looks like a developer issue. Please claim it if it is yours:\n"
 
             body+=build_info['url'] + "\n"
@@ -938,8 +977,11 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 if ((elapsedKvetchTime.days < 1) and
                     (elapsedKvetchTime.seconds < (23*(60*60)))):
                     # has not been over a day yet, do not kvetch again
-                    print("Skipping kvetch, last %s ago"
-                          % time_elapsed_str(elapsedKvetchTime), file=f)
+                    print("Skipping kvetch for %s #%d, last %s ago" %
+                          (build_info['name'],
+                           build_info['number'],
+                           time_elapsed_str(elapsedKvetchTime)),
+                          file=f)
                     return
     else:
         kvetch_info={}
@@ -960,7 +1002,6 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     body+=msg.getvalue()
     if (do_email):
         send_email(email_to, email_cc, subject, body)
-        print(kvetch_info)
         db_set_kvetch_info(kvetch_info)
     else:
         print(subject,file=f)

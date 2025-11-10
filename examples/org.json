@@ -1,25 +1,33 @@
 {
-    "lead" : "georges",
-    "teams" : [
+  "lead": {
+    "username": "georges", "email": "georges@thinkercats.com"
+  },
+  "teams": [
+    {
+      "lead": {
+        "username": "davidk", "email": "davidk@thinkercats.com"
+      },
+      "teams": [
         {
-            "lead" : "davidk",
-            "teams"   : [
-                {
-                    "lead" : "waltc",
-                    "members" : [
-                        "garyv",
-                        "joem"
-                    ]
-                },
-                {
-                    "lead" : "dsmith",
-                    "members" : [
-                        "coleenp",
-                        "judyw",
-                        "prem"
-                    ]
-                }
-            ]
+          "lead": {
+            "username": "waltc", "email": "waltc@thinkercats.com"
+          },
+          "members": [
+            { "username": "garyv", "email": "garyv@thinkercats.com"},
+            { "username": "joem",  "email": "joem@thinkercats.com" }
+          ]
+        },
+        {
+          "lead": {
+            "username": "dsmith", "email": "dsmith@thinkercats.com"
+          },
+          "members": [
+            { "username": "coleenp", "email": "coleenp@thinkercats.com" },
+            { "username": "judyw", "email": "judyw@thinkercats.com" },
+            { "username": "prem", "email": "prem@thinkercats.com" }
+          ]
         }
-    ]
+      ]
+    }
+  ]
 }
