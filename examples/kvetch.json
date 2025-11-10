@@ -8,7 +8,7 @@
     "from_email":    "<email addresss to send Kvetch email from>",
     "smtp_server":   "<smtp server>",
     "smtp_port":     25,
-    "build_monitor": "<build monitor email address>"
-
+    "build_monitor": "<build monitor email address>",
+    "kvetch_mode":   "ON",
 }
   

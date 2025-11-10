@@ -570,6 +570,7 @@ smtp_port=None
 
 def send_email(to_email, cc_email, subject, body):
     global from_email, smtp_server, smtp_port
+
     msg = EmailMessage()
     msg.set_content(body)
     msg["Subject"] = subject
@@ -879,10 +880,13 @@ def skip_success(build_info):
     return False
 
 def kvetch(f,job_info,build_info,buildlog,do_email):
-    global enable_header
+    global enable_header,build_monitor,kvetch_mode
     enable_header=True
     if (do_email):
         print_header(f,job_info,build_info)
+
+    if (kvetch_mode == 'OFF'):
+        return
 
     if (build_info['result']=='SUCCESS'):
         if (build_info['number']-1 == job_info['lastFailedBuild']):
@@ -933,15 +937,17 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 email_to = get_email_of(claimedBy)
                 body+="Dear " + claimedBy + ",\n\n"
 
-                body+=f"TBD: sending to {build_monitor} instad of {email_to}\n"
-                email_to = build_monitor # TBD: claimedBy
+                if (kvetch_mode == "DEBUG"):
+                    body+=f"TBD: sending to {build_monitor} instad of {email_to}\n"
+                    email_to = build_monitor # TBD: claimedBy
 
                 if (elapsedFailureTime.days > 1):
                     boss=get_lead_of(claimedBy)
                     email_cc = get_email_of(boss)
 
-                    body+=f"TBD: cc {build_monitor} instead of {email_cc}\n"
-                    email_cc = build_monitor # TBD: boss
+                    if (kvetch_mode == "DEBUG"):
+                        body+=f"TBD: cc {build_monitor} instead of {email_cc}\n"
+                        email_cc = build_monitor # TBD: boss
 
                 body+="This build is still failing. Please make fixing it your top priority. If the failure is no longer yours, please reassign the claim.\n"
                 body+=build_info['url'] + "\n"
@@ -959,8 +965,9 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 email_to = dev_emails
                 body+=f"Dear {dev_emails},\n\n"
 
-                body+=f"TBD: Sending to {build_monitor} instead {email_to}\n"
-                email_to = build_monitor # TBD: dev_emails
+                if (kvetch_mode == "DEBUG"):
+                    body+=f"TBD: Sending to {build_monitor} instead {email_to}\n"
+                    email_to = build_monitor # TBD: dev_emails
 
                 body+="This build failure looks like a developer issue. Please claim it if it is yours:\n"
 
@@ -1062,6 +1069,7 @@ if __name__ == "__main__":
     smtp_server=config['smtp_server']
     smtp_port=config['smtp_port']
     build_monitor=config['build_monitor']
+    kvetch_mode=config['kvetch_mode']
 
     init(org_path)
 
