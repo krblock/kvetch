@@ -897,6 +897,12 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                            None,
                            f"kvetch: {build_info['fullDisplayName']} successful again",
                            build_info['url']+"\n")
+                # Clear out the kvetch_info
+                kvetch_info['build'] = -1
+                kvetch_info['target'] = ""
+                kvetch_info['timestamp'] = datetime.datetime.now().timestamp() * 1000
+                kvetch_info['level'] = 1
+                db_set_kvetch_info(kvetch_info)
             else:
                 print(f"{build_info['fullDisplayName']} successful again")
                 if (kvetch_info):
