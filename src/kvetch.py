@@ -151,6 +151,11 @@ def get_build_info(job,build):
 
     change_set=[]
     real_changeSets = real_build_info.get('changeSets')
+    if (not real_changeSets):
+        real_changeSet = real_build_info.get('changeSet')
+        if (real_changeSet):
+            real_changeSets = [ real_changeSet ]
+
     if (real_changeSets):
         for real_changeSet in real_changeSets:
             for real_item in real_changeSet['items']:
@@ -490,7 +495,7 @@ def db_for_each_build(job_infos, build_pred, callback,f):
                     continue
 
                 if (build_pred):
-                    pred=build_pred(build_info)
+                    pred=build_pred(job_info,build_info)
                     if (pred is None):
                         break
                     if (pred):
@@ -669,13 +674,16 @@ def skip_build(job_info,build_info):
 first_record=True
 def record_build(f,job_info,build_info):
     global first_record
+
+    if (build_info['inProgress']):
+        return
+
     if (first_record):
         print("Populating New Builds ...")
         first_record=False
 
     print_build_internal(f,job_info,build_info,False)
-    if (build_info['inProgress']):
-        return
+
     build_log = get_build_console(build_info['name'],build_info['number'])
     db_add_build(build_info)
     db_add_build_log(build_info['fullDisplayName'],build_log)
@@ -716,7 +724,7 @@ def time_elapsed_str(elapsed):
     elif secs > 0 or not parts:
         parts.append(f"{secs} second{'s' if secs != 1 else ''}")
 
-    return ", ".join(parts) + " ago"
+    return ", ".join(parts)
 
 def elapsed_failure_time(firstFailure,job_info,build_info):
     if (firstFailure == build_info['number']):
@@ -762,7 +770,7 @@ def print_build_internal(f,job_info, build_info,verbose):
     print('',file=f)
 
 def print_build(f,job_info,build_info):
-    print_build_internal(f,job_info,build_info, True)
+    print_build_internal(f,job_info,build_info, False)
     
 #
 # print build status is an optimized version of print_build that avoids
@@ -817,9 +825,13 @@ def print_changeSets(f,build_info):
             print("",file=f)
             print(textwrap.indent(c['comment'],'        '),file=f)
 
-def print_build_summary(f,job_info,build_info,buildlog):
+def print_build_scan_log(f,job_info,build_info,buildlog):
     print_header(f,job_info,build_info)
     print_scan_log(f,job_info,buildlog)
+
+def print_build_summary(f,job_info,build_info):
+    print_header(f,job_info,build_info)
+    print_changeSets(f,build_info)
 
 enable_header = False
 first_header = True
@@ -831,25 +843,11 @@ def print_header(f,job_info,build_info):
         if (not first_header):
             print("\n",file=f)
         first_header=False
-        
-        log_header=f"{name} #{num}"
-        if (build_info['inProgress']):
-            log_header+= " : RUNNING"
-        else:
-            r=build_info['result']
-            log_header+=f" : {r}"
-            if (r == "FAILURE"):
-                firstFailure=job_info['lastSuccessfulBuild']+1
-                elapsedFailureTime = elapsed_failure_time(firstFailure,job_info,build_info)
-                elapsed_time = time_elapsed_str(elapsedFailureTime)
-                log_header+=f" (#{firstFailure}, {elapsed_time})"
 
-        claimedBy = get_claimedBy(build_info)
-        if (claimedBy):
-            log_header+=f" claimed by {claimedBy}"
-
-
-        print(log_header,file=f)
+        log=io.StringIO()
+        print_build_internal(log,job_info,build_info,False)
+        log_header = log.getvalue()
+        print(log_header,file=f,end='')
         print('-'*len(log_header),file=f)
     print("",file=f)
 
@@ -857,14 +855,14 @@ def scan_log_callback(f,job_info,build_info):
     name=build_info['name']
     num=build_info['number']
     buildlog=get_build_console(name,num)
-    print_build_summary(f,job_info,build_info,buildlog)
+    print_build_scan_log(f,job_info,build_info,buildlog)
 
 
 def db_scan_log_callback(f,job_info,build_info):
     name=build_info['name']
     num=build_info['number']
     buildlog=db_get_build_log(name,num)
-    print_build_summary(f,job_info,build_info,buildlog)
+    print_build_scan_log(f,job_info,build_info,buildlog)
 
 def db_print_log_callback(f,job_info,build_info):
     print_header(f,job_info,build_info)
@@ -874,7 +872,7 @@ def db_print_log_callback(f,job_info,build_info):
     buildlog=db_get_build_log(name,num)
     print(f,buildlog)
 
-def skip_success(build_info):
+def skip_success(job_info,build_info):
     if (build_info['result'] == "SUCCESS"):
         return True
     return False
@@ -1093,6 +1091,14 @@ if __name__ == "__main__":
         print("Error: unable to load jobs: %s" % e)
         sys.exit(1)
 
+    if (count_builds(job_infos) > 1):
+        enable_header = True
+        scan_log_limit = 30
+
+    build_filter=None
+    if '-f' in opts:
+        build_filter=skip_success
+
     #
     # These options only pull data from Jenkins
     #
@@ -1103,15 +1109,19 @@ if __name__ == "__main__":
         print_jobs_status(sys.stdout,job_infos)
         sys.exit(0)
     elif '-a' in opts:
-        for_each_build(job_infos, None, print_build_json,sys.stdout)
+        for_each_build(job_infos, build_filter, print_build_json,sys.stdout)
         sys.exit(0)
     elif '-q' in opts:
-        for_each_build(job_infos, None, print_build,sys.stdout)
-        sys.exit(0)
-    elif '-r' in opts:
-        # This is for triage at end of Job in Jenkins, no DB involved
-        for_each_build(job_infos, None, scan_log_callback,sys.stdout)
-        sys.exit(0)
+        if '-d' in opts:
+            for_each_build(job_infos, build_filter, print_build,sys.stdout)
+            sys.exit(0)
+        elif '-r' in opts:
+            for_each_build(job_infos, build_filter, print_build_summary,sys.stdout)
+            sys.exit(0)
+        elif '-x' in opts:
+            # This is for triage at end of Job in Jenkins, no DB involved
+            for_each_build(job_infos, build_filter, scan_log_callback,sys.stdout)
+            sys.exit(0)
 
     #
     # Populate new data into DB from Jenkins unless specifically suspended
@@ -1130,29 +1140,24 @@ if __name__ == "__main__":
     #
     # These options only pull data from the DB
     #
-    if (count_builds(job_infos) > 1):
-        enable_header = True
-        scan_log_limit = 30
-
     out=sys.stdout
     if '-m' in opts:
         out = io.StringIO()
         
 
     whatis=None
-    build_filter=None
-    if '-f' in opts:
-        build_filter=skip_success
-
     if '-d' in opts:
         whatis="status"
         db_for_each_build(job_infos,build_filter,print_build,out)
-    elif '-l' in opts:
-        whatis="build log"
-        db_for_each_build(job_infos,build_filter,db_print_log_callback,out)
+    elif '-r' in opts:
+        whatis="summary"
+        db_for_each_build(job_infos,build_filter,print_build_summary,out)
     elif '-x' in opts:
         whatis="scan log"
         db_for_each_build(job_infos,build_filter,db_scan_log_callback,out)
+    elif '-l' in opts:
+        whatis="build log"
+        db_for_each_build(job_infos,build_filter,db_print_log_callback,out)
     elif '-k' in opts:
         callback=db_kvetch_print_callback
         if '-m' in opts:
