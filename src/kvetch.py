@@ -573,16 +573,27 @@ from_email=None
 smtp_server=None
 smtp_port=None
 
-def send_email(to_email, cc_email, subject, body):
-    global from_email, smtp_server, smtp_port
+def send_email(to_email, cc_email, subject, body, mode):
+    global from_email, smtp_server, smtp_port, debug_email
+
+    if (mode == 'OFF'):
+        return
 
     msg = EmailMessage()
-    msg.set_content(body)
     msg["Subject"] = subject
     msg["From"] = from_email
-    msg["To"] = to_email
-    if (cc_email):
-        msg['Cc'] = cc_email
+    if (mode == "DEBUG"):
+        msg["To"]=debug_email
+        body+=f"TBD: sending to {debug_email} instead of {to_email}\n"
+        if (cc_email):
+            msg['Cc'] = debug_email
+            body+=f"TBD: cc to {debug_email} instead of {cc_email}\n"
+    else:
+        msg["To"] = to_email
+        if (cc_email):
+            msg['Cc'] = cc_email
+
+    msg.set_content(body)
 
     try:
         with smtplib.SMTP(smtp_server, smtp_port) as server:
@@ -590,6 +601,15 @@ def send_email(to_email, cc_email, subject, body):
         print("✅ Email sent successfully.")
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
+
+def merge_emails(a,b):
+    if (a):
+        if (b):
+            return a+","+b
+        else:
+            return a
+    else:
+        return b
 
 #
 # Load user defined function
@@ -878,10 +898,9 @@ def skip_success(job_info,build_info):
     return False
 
 def kvetch(f,job_info,build_info,buildlog,do_email):
-    global enable_header,build_monitor,kvetch_mode
+    global enable_header,kvetch_mode
+    global build_monitors,dev_monitors,all_monitors,debug_email
     enable_header=True
-    if (do_email):
-        print_header(f,job_info,build_info)
 
     if (kvetch_mode == 'OFF'):
         return
@@ -889,12 +908,16 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     if (build_info['result']=='SUCCESS'):
         if (build_info['number']-1 == job_info['lastFailedBuild']):
             kvetch_info = db_get_kvetch_info(build_info['name'])
-            if (kvetch_info and do_email):
+            if (do_email):
+                if (not (kvetch_info and len(kvetch_info['target'])>0)):
+                    return
+
+                print_header(f,job_info,build_info)
                 #TBD: add claimee even if not previously kvetched at?
                 send_email(kvetch_info['target'],
-                           None,
+                           None, # TBD: who else might be interested
                            f"kvetch: {build_info['fullDisplayName']} successful again",
-                           build_info['url']+"\n")
+                           build_info['url']+"\n", kvetch_mode)
                 # Clear out the kvetch_info
                 kvetch_info['build'] = -1
                 kvetch_info['target'] = ""
@@ -906,6 +929,9 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 if (kvetch_info):
                     print(f"let {kvetch_info['target']} know")
         return
+
+    if (do_email):
+        print_header(f,job_info,build_info)
 
     email_to = None
     email_cc = None
@@ -919,7 +945,7 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     s=get_scan_log(buildlog)
 
     if (s['blame'] == "System"):
-        email_to = build_monitor
+        email_to = build_monitors
         body+="Dear Build Monitors,\n\n"
         body+="This build failure looks like an infrastructure issue.\n"
         if (claimedBy):
@@ -933,7 +959,8 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     else:
         if (claimedBy):
             if (claimedBy == "SYSTEM"):
-                email_to = build_monitor
+                email_to = build_monitors
+
                 body+="Dear Build Monitors\n\n"
                 body+="This build is still failing and is assigned to SYSTEM, but it does not look like a system failure to me. Can you take a look?\n"
                 body+=build_info['url'] + "\n"
@@ -941,38 +968,28 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
                 email_to = get_email_of(claimedBy)
                 body+="Dear " + claimedBy + ",\n\n"
 
-                if (kvetch_mode == "DEBUG"):
-                    body+=f"TBD: sending to {build_monitor} instad of {email_to}\n"
-                    email_to = build_monitor # TBD: claimedBy
-
                 if (elapsedFailureTime.days > 1):
                     boss=get_lead_of(claimedBy)
                     email_cc = get_email_of(boss)
-
-                    if (kvetch_mode == "DEBUG"):
-                        body+=f"TBD: cc {build_monitor} instead of {email_cc}\n"
-                        email_cc = build_monitor # TBD: boss
+                    if (all_monitors):
+                        email_cc+=","+all_monitors
 
                 body+="This build is still failing. Please make fixing it your top priority. If the failure is no longer yours, please reassign the claim.\n"
                 body+=build_info['url'] + "\n"
         else:
             if (firstFailure < build_info['number']):
-                email_to = build_monitor
-                body+="Dear Build Monitor,\n\n"
+                email_to = all_monitors
+                body+="Dear Build Monitors,\n\n"
                 body+="This build failure looks like a developer issue, but it was not claimed. Can you take a look?\n"
             elif (len(developers)==0):
-                email_to = build_monitor
-                body+="Dear Build Monitor,\n\n"
+                email_to = all_monitors
+                body+="Dear Build Monitors,\n\n"
                 body+="This build failure looks like a developer issue, but there are no commits. Can you take a look?\n"
             else:
                 dev_emails=",".join(developers)
                 email_to = dev_emails
+                email_cc = all_monitors
                 body+=f"Dear {dev_emails},\n\n"
-
-                if (kvetch_mode == "DEBUG"):
-                    body+=f"TBD: Sending to {build_monitor} instead {email_to}\n"
-                    email_to = build_monitor # TBD: dev_emails
-
                 body+="This build failure looks like a developer issue. Please claim it if it is yours:\n"
 
             body+=build_info['url'] + "\n"
@@ -982,18 +999,24 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     kvetch_info = db_get_kvetch_info(build_info['name'])
     # Only skip kvetching if we are sending an email
     if (kvetch_info and do_email):
-        if (kvetch_info['build']==build_info['number']):
-            if (kvetch_info['target']==email_to):
-                elapsedKvetchTime=time_elapsed(kvetch_info['timestamp'])
-                if ((elapsedKvetchTime.days < 1) and
-                    (elapsedKvetchTime.seconds < (23*(60*60)))):
-                    # has not been over a day yet, do not kvetch again
-                    print("Skipping kvetch for %s #%d, last %s ago" %
-                          (build_info['name'],
+        if (kvetch_info['target']==email_to):
+            elapsedKvetchTime=time_elapsed(kvetch_info['timestamp'])
+            # Only kvetch once a day about an existing build
+            # and twice a day for new builds
+            if (kvetch_info['build']==build_info['number']):
+                tlimit=(23*(60*60))
+            else:
+                # TBD: look to see if same failure as last time
+                tlimit=(12*(60*60))
+            if ((elapsedKvetchTime.days < 1) and
+                (elapsedKvetchTime.seconds < tlimit)):
+                # has not been over a day yet, do not kvetch again
+                print("Skipping kvetch for %s #%d, last %s ago" %
+                      (build_info['name'],
                            build_info['number'],
                            time_elapsed_str(elapsedKvetchTime)),
                           file=f)
-                    return
+                return
     else:
         kvetch_info={}
         kvetch_info['jobName']=build_info['name']
@@ -1012,7 +1035,7 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     subject+=" "+build_info['fullDisplayName']
     body+=msg.getvalue()
     if (do_email):
-        send_email(email_to, email_cc, subject, body)
+        send_email(email_to, email_cc, subject, body, kvetch_mode)
         db_set_kvetch_info(kvetch_info)
     else:
         print(subject,file=f)
@@ -1044,13 +1067,13 @@ if __name__ == "__main__":
         sys.exit(1)
 
     config_name=None
-    view_name=None
+    view_names=[]
     job_names=[]
     build_ids=[]
     
     for o, a in opts:
         if o == "-v":
-            view_name = a
+            view_names.append(a)
         elif o == "-j":
             job_names.append(a)
         elif o == "-b":
@@ -1072,18 +1095,25 @@ if __name__ == "__main__":
     from_email=config['from_email']
     smtp_server=config['smtp_server']
     smtp_port=config['smtp_port']
-    build_monitor=config['build_monitor']
+    build_monitors_list=config['build_monitors']
+    build_monitors=",".join(build_monitors_list)
+    dev_monitors_list=config['dev_monitors']
+    dev_monitors=",".join(dev_monitors_list)
+    all_monitors=merge_emails(build_monitors,dev_monitors)
+    debug_email=config['debug_email']
     kvetch_mode=config['kvetch_mode']
+    report_mode=config['report_mode']
 
     init(org_path)
 
-    if (view_name):
-        try:
-            jobs_from_view=get_jobs(view_name)
-        except Exception as e:
-            print("Error: unable to load view: %s" % e)
-            sys.exit(1)
-        job_names.extend(get_jobs(view_name))
+    if (view_names):
+        for view_name in view_names:
+            try:
+                jobs_from_view = get_jobs(view_name)
+            except Exception as e:
+                print("Error: unable to load view: %s" % e)
+                sys.exit(1)
+            job_names.extend(get_jobs(view_name))
 
     try:
         job_infos = get_job_infos(job_names,build_ids)
@@ -1168,17 +1198,17 @@ if __name__ == "__main__":
     if (whatis):
         if '-m' in opts:
             subject="Kvetch:"
-            if (view_name):
-                subject+=" "+view_name
+            if (view_names):
+                subject+="|".join(view_names)
             else:
-                for job in job_names:
-                    subject+=" "+job
+                subject+="|".join(job_names)
 
             subject+=" "+whatis
             body = out.getvalue()
             if (body == ""):
                 body = "All builds were successful"
-            send_email(build_monitor, None, subject, body)
+
+            send_email(all_monitors, None, subject, body, report_mode)
         
     finish()
     sys.exit(0)
