@@ -521,7 +521,7 @@ def count_builds(job_infos):
 import os
 import json
 
-def find_and_load_json_config(filename="kvetch.json", search_paths=None):
+def find_config_file(filename,search_paths=None):
     """Searches for a JSON config file in a list of directories and loads
     its contents.  Relative paths are resolved based on the script's
     location.
@@ -556,14 +556,20 @@ def find_and_load_json_config(filename="kvetch.json", search_paths=None):
     for path in resolved_paths:
         full_path = os.path.join(path, filename)
         if os.path.isfile(full_path):
-            try:
-                with open(full_path, 'r') as f:
-                    return json.load(f)
-            except json.JSONDecodeError as e:
-                print(f"Error decoding JSON in {full_path}: {e}")
-                return None
+            return full_path
 
     print(f"{filename} not found in any of the specified paths: {resolved_paths}")
+    return None
+
+def find_and_load_json_config(filename="kvetch.json", search_paths=None):
+    full_path = find_config_file(filename,search_paths)
+    if (full_path):
+        try:
+            with open(full_path, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON in {full_path}: {e}")
+            return None
     return None
 
 #
@@ -758,6 +764,12 @@ def elapsed_failure_time(firstFailure,job_info,build_info):
             firstFailureTime = build_info['timestamp']
     return time_elapsed(firstFailureTime)
 
+def first_failure(job_info):
+    lastSuccess=job_info['lastSuccessfulBuild']
+    if (lastSuccess):
+        return lastSuccess+1
+    return job_info['lastCompletedBuild']
+
 def print_build_internal(f,job_info, build_info,verbose):
     print("%-40s #%-4d" % (build_info['name'], build_info['number']),
           end='', file=f)
@@ -771,7 +783,7 @@ def print_build_internal(f,job_info, build_info,verbose):
         r=build_info['result']
         print(" : %s" % r, end='',file=f)
         if (r == "FAILURE"):
-            firstFailure=job_info['lastSuccessfulBuild']+1
+            firstFailure=first_failure(job_info)
             elapsedFailureTime = elapsed_failure_time(firstFailure,job_info,build_info)
             print(" (#%d, %s)" %
                   (firstFailure,time_elapsed_str(elapsedFailureTime)),
@@ -936,7 +948,7 @@ def kvetch(f,job_info,build_info,buildlog,do_email):
     email_to = None
     email_cc = None
     body=""
-    firstFailure=job_info['lastSuccessfulBuild']+1
+    firstFailure=first_failure(job_info)
     elapsedFailureTime = elapsed_failure_time(firstFailure,job_info,build_info)
     claimedBy = get_claimedBy(build_info)
     developers=get_developers(build_info)
@@ -1090,8 +1102,12 @@ if __name__ == "__main__":
     jenkins_url=config['jenkins_url']
     jenkins_auth=config['jenkins_auth']
     db_path=config['db_path']
-    scan_log_func=load_func_from_file(config['scanlogpy'],config['scanlogfunc'])
+    scanlogpath=find_config_file(config['scanlogpy'])
+    scan_log_func=load_func_from_file(scanlogpath,config['scanlogfunc'])
+
     org_path=config['org_chart']
+    org_path=find_config_file(org_path)
+
     from_email=config['from_email']
     smtp_server=config['smtp_server']
     smtp_port=config['smtp_port']
